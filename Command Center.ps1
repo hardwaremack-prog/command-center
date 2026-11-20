@@ -2,7 +2,10 @@
 # Start it with the "Command Center" icon on the Desktop (or Start Command Center.bat in this folder).
 # Launch counts are kept in %LOCALAPPDATA%\Command Center\usage.json and drive the "Most used" row,
 # together with Windows' own launch counts that Scan-Apps.ps1 reads (scan.json in the same folder).
-# The Web servers row lists every local web server it finds, with a live status light.
+# The Web servers row lists every local web server it finds, with a live status light and a Stop button.
+# Running / Stop (top right) lists everything running on this PC and stops any of it (see Running.ps1).
+# Right-click an app tile to stop that app.
+# Update (top right) gets the newest version from github.com/hardwaremack-prog/command-center (see Update.ps1).
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Drawing
@@ -66,6 +69,8 @@ $apps = @(
   # AI & Dev
   @{ n='LM Studio';       g='AI & Dev';   t="$PF\AMD\AI_Bundle\LMStudio\LM Studio\LM Studio.exe"; p=1234; s=9 }
   @{ n='Halo Lab';        g='AI & Dev';   t="$Desk\Halo Lab.lnk"; i="$MyApps\Apps\Halo Lab\Halo Lab.ico"; p=11500; s=8 }
+  @{ n='Halo Studio';     g='AI & Dev';   t="$MyApps\Apps\Halo Studio\Start-Halo-Studio.bat"; i="$MyApps\Apps\Halo Studio\Halo Studio.ico"; p=8395; s=6 }
+  @{ n='Cutwise';         g='AI & Dev';   t="$MyApps\Apps\Cutwise\Start Cutwise.bat"; i="$MyApps\Apps\Cutwise\Cutwise.ico"; p=8765; s=6 }
   @{ n='HAL 9000';        g='AI & Dev';   t="$MyApps\Apps\HAL\Start HAL.bat"; s=6 }
   @{ n='Blueprint Wiki';  g='AI & Dev';   t="$Desk\Blueprint Wiki.lnk"; i="$MyApps\Apps\Blueprint Wiki\blueprint-wiki.ico"; s=3 }
   @{ n='PowerShell';      g='AI & Dev';   t=$WinPS; s=4 }
@@ -100,8 +105,8 @@ $apps = @(
   @{ n='PodDeck';         g='Raspberry Pi'; t="$MyApps\Raspberry Pi\PodDeck\Open PodDeck.html"; i="$MyApps\Raspberry Pi\PodDeck\poddeck.ico" }
 
   # Games
-  @{ n='Minecraft';       g='Games'; aumid='Microsoft.MinecraftUWP_8wekyb3d8bbwe!App' }
-  @{ n='Roblox';          g='Games'; aumid='ROBLOXCorporation.RobloxGDK_55nm5eh3cm0pr!Game' }
+  @{ n='Minecraft';       g='Games'; aumid='Microsoft.MinecraftUWP_8wekyb3d8bbwe!App'; proc='Minecraft.Windows' }
+  @{ n='Roblox';          g='Games'; aumid='ROBLOXCorporation.RobloxGDK_55nm5eh3cm0pr!Game'; proc='RobloxPlayerBeta','RobloxGDK' }
   @{ n='Oregon Trail';    g='Games'; t="$MyApps\Games\Oregon Trail\oregon-trail-final b2.html" }
   @{ n='Dead Mall Arena'; g='Games'; t="$MyApps\Games\Dead Mall Arena\arena-final b11.html" }
   @{ n='Blockscape';      g='Games'; t="$MyApps\Games\Blockscape\blockscape.html" }
@@ -151,6 +156,8 @@ $baseApps = $apps
 Trace 'apps listed'
 . (Join-Path $here 'Scan-Apps.ps1')
 Trace 'Scan-Apps loaded'
+. (Join-Path $here 'Running.ps1')
+. (Join-Path $here 'Update.ps1')
 $scanFile = Join-Path $dataDir 'scan.json'
 function Merge-Scan {
   $script:apps = @($baseApps | ForEach-Object { $_.w = 0; $_ })
@@ -329,6 +336,44 @@ function Start-OpenClaw([string]$cmdArgs, [switch]$Hidden, [switch]$KeepOpen) {
       <Setter Property="Foreground" Value="#1A0F0C"/>
       <Setter Property="FontWeight" Value="SemiBold"/>
     </Style>
+    <Style x:Key="StopBtn" TargetType="Button">
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Width" Value="24"/>
+      <Setter Property="Height" Value="24"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="b" Background="#2A1C22" BorderBrush="#5A2C33" BorderThickness="1" CornerRadius="12">
+              <TextBlock x:Name="g" Text="&#xE71A;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="9"
+                         Foreground="#FF7A7A" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="b" Property="Background" Value="#FF5A5A"/>
+                <Setter TargetName="g" Property="Foreground" Value="#1A0F0C"/>
+              </Trigger>
+              <Trigger Property="IsPressed" Value="True"><Setter TargetName="b" Property="Background" Value="#E04848"/></Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="StopPill" TargetType="Button" BasedOn="{StaticResource Pill}">
+      <Setter Property="Foreground" Value="#FFB0B0"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="b" Background="#3A1F24" BorderBrush="#5A2C33" BorderThickness="1" CornerRadius="16" Padding="{TemplateBinding Padding}">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="b" Property="Background" Value="#5A2C33"/></Trigger>
+              <Trigger Property="IsPressed" Value="True"><Setter TargetName="b" Property="Background" Value="#FF5A5A"/></Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
   </Window.Resources>
 
   <Grid Margin="24,18,8,0">
@@ -349,6 +394,10 @@ function Start-OpenClaw([string]$cmdArgs, [switch]$Hidden, [switch]$KeepOpen) {
         <TextBlock x:Name="SubTitle" Foreground="{StaticResource Muted}" FontSize="13" Margin="1,2,0,0"/>
       </StackPanel>
       <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+      <Button x:Name="RunBtn" Style="{StaticResource StopPill}" Margin="0,0,10,0" VerticalAlignment="Center"
+              ToolTip="See everything running on this PC - apps, servers, scripts - and stop any of it"/>
+      <Button x:Name="UpdateBtn" Style="{StaticResource Pill}" Margin="0,0,10,0" VerticalAlignment="Center"
+              ToolTip="Get the newest Command Center from GitHub"/>
       <Button x:Name="RescanBtn" Style="{StaticResource Pill}" Margin="0,0,10,0" VerticalAlignment="Center"
               ToolTip="Look again for your most used apps and for web servers running on this PC"/>
       <Border Background="{StaticResource Card}" BorderBrush="{StaticResource Line}" BorderThickness="1"
@@ -429,7 +478,7 @@ $wa = [Windows.SystemParameters]::WorkArea
 $win.Width  = [Math]::Max(900, [Math]::Min(1700, $wa.Width * 0.62))
 $win.Height = [Math]::Max(640, [Math]::Min(1150, $wa.Height * 0.82))
 $ui = @{}
-foreach ($name in 'SubTitle','Search','SearchHint','ClawGlyph','GwDot','GwText','LmDot','LmText','HwPill','HwDot','HwText','ShPill','ShDot','ShText','ClawInfo','ClawButtons','Sections','RescanBtn') {
+foreach ($name in 'SubTitle','Search','SearchHint','ClawGlyph','GwDot','GwText','LmDot','LmText','HwPill','HwDot','HwText','ShPill','ShDot','ShText','ClawInfo','ClawButtons','Sections','RescanBtn','RunBtn','UpdateBtn') {
   $ui[$name] = $win.FindName($name)
 }
 $brush = New-Object Windows.Media.BrushConverter
@@ -536,6 +585,7 @@ function New-Tile($app) {
   $b.Content = $g
   $b.Tag = $app
   $b.Add_Click({ param($s, $e) Start-App $s.Tag })
+  Add-AppStopMenu $b
   [void]$allTiles.Add($b)
   return $b
 }
@@ -572,16 +622,24 @@ function Build-Sections {
 $haloPort = 11500; $haloLan = $false
 try { $hc = Get-Content (Join-Path $env:LOCALAPPDATA 'HaloLab\config.json') -Raw | ConvertFrom-Json; if ([int]$hc.port -ge 1024) { $haloPort = [int]$hc.port }; $haloLan = [bool]$hc.lan } catch {}
 $knownServers = @(
-  @{ n = 'OpenClaw gateway'; port = 18789; always = $true; note = 'Your AI agent. Click opens its dashboard.'; open = { Start-OpenClaw 'dashboard --yes' -Hidden } }
-  @{ n = 'LM Studio';        port = 1234;  always = $true; note = 'Model server OpenClaw uses (OpenAI-style API at /v1).'; api = $true }
+  @{ n = 'OpenClaw gateway'; port = 18789; always = $true; note = 'Your AI agent. Click opens its dashboard.'; open = { Start-OpenClaw 'dashboard --yes' -Hidden }
+     stop = { Start-OpenClaw 'gateway stop --force' -Hidden; 'Asked OpenClaw to stop its gateway - the light turns red in a few seconds.' }
+     restart = { Start-OpenClaw 'gateway restart' -Hidden; 'Restarting the OpenClaw gateway...' } }
+  @{ n = 'LM Studio';        port = 1234;  always = $true; note = 'Model server OpenClaw uses (OpenAI-style API at /v1).'; api = $true
+     stop = { $lms = Join-Path $U '.lmstudio\bin\lms.exe'; if (Test-Path -LiteralPath $lms) { Start-Process -FilePath $lms -ArgumentList 'server stop' -WindowStyle Hidden; 'Asked LM Studio to stop serving (the LM Studio app stays open).' } }
+     restart = { $lms = Join-Path $U '.lmstudio\bin\lms.exe'; if (Test-Path -LiteralPath $lms) { Start-Process -FilePath $lms -ArgumentList 'server start' -WindowStyle Hidden; 'Asked LM Studio to start serving.' } } }
   @{ n = 'Halo Lab';         port = $haloPort; always = $true; note = 'AI dashboard. Change its port in Halo Lab > Setup.' }
+  @{ n = 'Halo Studio';      port = 8395;  always = $true; note = 'AI image editor. Phones and Pis on your network can open it too.' }
+  @{ n = 'Cutwise';          port = 8765;  always = $true; note = 'Easy AI video editor. Runs on this PC only.' }
   @{ n = 'The Shelf';        port = 8080;  always = $true; note = 'Your apps, files and AI tab.' }
-  @{ n = 'Hardware Monitor'; port = 8085;  always = $true; note = 'LibreHardwareMonitor web server (Options > Remote Web Server).' }
+  @{ n = 'Hardware Monitor'; port = 8085;  always = $true; note = 'LibreHardwareMonitor web server (Options > Remote Web Server).'; procName = 'LibreHardwareMonitor' }
   @{ n = 'Halo Lab engine';  port = 11600; note = 'llama.cpp running the model Halo Lab loaded.'; api = $true }
   @{ n = 'FastFlowLM (NPU)'; port = 52625; note = 'Runs models on the NPU.'; api = $true }
-  @{ n = 'Ollama';           port = 11434; note = 'Ollama model server.'; api = $true }
+  @{ n = 'ComfyUI';          port = 8188;  note = 'AI image engine Halo Studio uses for generative fill.' }
+  @{ n = 'Ollama';           port = 11434; note = 'Ollama model server.'; api = $true; procName = 'ollama' }
 )
 $bg = [hashtable]::Synchronized(@{ servers = @(); serversAt = $null; scanning = $false; appsDone = $false; stop = $false; lan = $null
+  procs = @(); procsAt = $null; procsWanted = $false; procsNow = $false; serversNow = $false
   watch = [hashtable]::Synchronized(@{}); up = [hashtable]::Synchronized(@{}) })
 foreach ($k in $knownServers) { $bg.watch[[int]$k.port] = $true }
 $script:serverSig = ''
@@ -594,7 +652,8 @@ function New-ServerTile($srv) {
   $g = New-Object Windows.Controls.Grid; $g.Margin = '12,8,10,8'
   $c0 = New-Object Windows.Controls.ColumnDefinition; $c0.Width = 'Auto'
   $c1 = New-Object Windows.Controls.ColumnDefinition; $c1.Width = '*'
-  [void]$g.ColumnDefinitions.Add($c0); [void]$g.ColumnDefinitions.Add($c1)
+  $c2 = New-Object Windows.Controls.ColumnDefinition; $c2.Width = 'Auto'
+  [void]$g.ColumnDefinitions.Add($c0); [void]$g.ColumnDefinitions.Add($c1); [void]$g.ColumnDefinitions.Add($c2)
   $dot = New-Object Windows.Shapes.Ellipse; $dot.Width = 11; $dot.Height = 11; $dot.Margin = '0,4,11,0'; $dot.VerticalAlignment = 'Top'
   $dot.Fill = $(if ($srv.up) { if ($srv.status -ge 500) { $amber } else { $green } } else { $red })
   [void]$g.Children.Add($dot)
@@ -608,6 +667,13 @@ function New-ServerTile($srv) {
   if ($srv.up -and [int]$srv.status -ge 400) { $t3.Text = $t3.Text + '  -  answers HTTP ' + $srv.status }
   [void]$sp.Children.Add($t1); [void]$sp.Children.Add($t2); [void]$sp.Children.Add($t3)
   [void]$g.Children.Add($sp)
+  if ($srv.up) {
+    $sb = New-Object Windows.Controls.Button; $sb.Style = $win.FindResource('StopBtn')
+    $sb.VerticalAlignment = 'Top'; $sb.Margin = '6,0,0,0'; $sb.ToolTip = 'Stop ' + $srv.n; $sb.Tag = $srv
+    [Windows.Controls.Grid]::SetColumn($sb, 2)
+    $sb.Add_Click({ param($s, $e) $e.Handled = $true; [void](Stop-Server $s.Tag) })
+    [void]$g.Children.Add($sb)
+  }
   $b.Content = $g
   $tip = $srv.n + '  (port ' + $srv.port + ')'
   if ($srv.note) { $tip += "`n" + $srv.note }
@@ -631,6 +697,14 @@ function New-ServerTile($srv) {
   $mi = New-Object Windows.Controls.MenuItem; $mi.Header = 'Open in browser'; $mi.Tag = $srv.url; $mi.Add_Click({ param($s, $e) try { Start-Process $s.Tag } catch {} }); [void]$cm.Items.Add($mi)
   $mi = New-Object Windows.Controls.MenuItem; $mi.Header = 'Copy link'; $mi.Tag = $srv.url; $mi.Add_Click({ param($s, $e) Copy-Text $s.Tag }); [void]$cm.Items.Add($mi)
   if ($srv.lanUrl) { $mi = New-Object Windows.Controls.MenuItem; $mi.Header = 'Copy link for other devices'; $mi.Tag = $srv.lanUrl; $mi.Add_Click({ param($s, $e) Copy-Text $s.Tag }); [void]$cm.Items.Add($mi) }
+  if ($srv.up) {
+    [void]$cm.Items.Add((New-Object Windows.Controls.Separator))
+    $mi = New-Object Windows.Controls.MenuItem; $mi.Header = 'Stop'; $mi.Tag = $srv; $mi.Add_Click({ param($s, $e) [void](Stop-Server $s.Tag) }); [void]$cm.Items.Add($mi)
+    $mi = New-Object Windows.Controls.MenuItem; $mi.Header = 'Force stop (ends the program now)'; $mi.Tag = $srv; $mi.Add_Click({ param($s, $e) [void](Stop-Server $s.Tag -Force) }); [void]$cm.Items.Add($mi)
+    if ($srv.restart -or ($apps | Where-Object { $_.p -eq $srv.port })) {
+      $mi = New-Object Windows.Controls.MenuItem; $mi.Header = 'Restart'; $mi.Tag = $srv; $mi.Add_Click({ param($s, $e) Restart-Server $s.Tag }); [void]$cm.Items.Add($mi)
+    }
+  }
   $b.ContextMenu = $cm
   [void]$allTiles.Add($b)
   return $b
@@ -646,6 +720,7 @@ function Get-ServerList {
     if (-not $up -and -not $k.always) { continue }
     $seen[[int]$k.port] = $true
     [void]$list.Add(@{ n = $k.n; port = $k.port; up = $up; note = $k.note; open = $k.open; api = $k.api
+      stop = $k.stop; restart = $k.restart; procName = $k.procName
       url = $(if ($f) { $f.url } else { "http://localhost:$($k.port)/" })
       lanUrl = $(if ($k.n -eq 'Halo Lab' -and $haloLan -and $bg.lan) { "http://$($bg.lan):$($k.port)/" } elseif ($f) { $f.lanUrl } else { $null })
       network = $(if ($k.n -eq 'Halo Lab') { $haloLan } elseif ($f) { [bool]$f.network } else { $false }); process = $(if ($f) { $f.name } else { '' }); pid = $(if ($f) { $f.pid } else { 0 })
@@ -670,7 +745,7 @@ function Add-ServerSection {
   $when = if ($bg.serversAt) { '   -   checked ' + $bg.serversAt.ToString('h:mm:ss tt') } else { '   -   looking...' }
   $h.Text = ('WEB SERVERS   -   ' + $up + ' running' + $when); $h.FontSize = 11.5; $h.FontWeight = 'SemiBold'
   $h.Foreground = $brush.ConvertFrom('#8C97AD'); $h.Margin = '2,4,0,10'
-  $h.ToolTip = 'Every program on this PC that answers like a web page. Green = running, red = not running, amber = answering with an error. Right-click a tile to copy its link. "network" means phones and other PCs on your home network can reach it too (if the firewall allows).'
+  $h.ToolTip = 'Every program on this PC that answers like a web page. Green = running, red = not running, amber = answering with an error. The red square stops a server. Right-click a tile to copy its link, force stop or restart it. "network" means phones and other PCs on your home network can reach it too (if the firewall allows).'
   $wp = New-Object Windows.Controls.WrapPanel; $wp.Margin = '0,0,0,12'
   foreach ($s in $list) { [void]$wp.Children.Add((New-ServerTile $s)) }
   $sec = New-Object Windows.Controls.StackPanel
@@ -682,13 +757,18 @@ function Add-ServerSection {
 
 # background: look for web servers every 20 seconds, and rescan apps when asked (or once a day)
 $bgCode = {
-  param($bg, $scanScript, $scanFile)
+  param($bg, $scanScript, $scanFile, $runScript)
   $ErrorActionPreference = 'Continue'
   . $scanScript
+  . $runScript
+  . (Join-Path (Split-Path -Parent $scanScript) 'Update.ps1')
   foreach ($p in @($bg.watch.Keys)) { $bg.up[[int]$p] = Test-TcpPort ([int]$p) }
+  # once per start: is there a newer Command Center on GitHub?
+  try { $bg.updates = @(Get-CCUpdates (Split-Path -Parent $scanScript)); $bg.updatesAt = Get-Date } catch {}
   $lastApps = [DateTime]::MinValue
   try { if (Test-Path $scanFile) { $lastApps = (Get-Item $scanFile).LastWriteTime } } catch {}
   while (-not $bg.stop) {
+    $bg.serversNow = $false
     try {
       if ($bg.rescan -or ((Get-Date) - $lastApps).TotalHours -gt 12) {
         $bg.scanning = $true; $bg.rescan = $false
@@ -704,19 +784,27 @@ $bgCode = {
       }
     } catch { $bg.scanning = $false }
     # quick up/down checks for the status lights every 2.5 seconds until the next full look
-    for ($i = 0; $i -lt 8 -and -not $bg.stop -and -not $bg.rescan; $i++) {
+    # (and, while the Running / Stop window is open, the list of running programs)
+    for ($i = 0; $i -lt 8 -and -not $bg.stop -and -not $bg.rescan -and -not $bg.serversNow; $i++) {
       foreach ($p in @($bg.watch.Keys)) { $bg.up[[int]$p] = Test-TcpPort ([int]$p) }
-      Start-Sleep -Milliseconds 2500
+      if ($bg.procsWanted) { try { $bg.procs = @(Get-RunningList); $bg.procsAt = Get-Date } catch {} }
+      $bg.procsNow = $false
+      for ($j = 0; $j -lt 10 -and -not $bg.stop -and -not $bg.procsNow -and -not $bg.serversNow -and -not $bg.rescan; $j++) { Start-Sleep -Milliseconds 250 }
     }
   }
 }
 $bgPs = [powershell]::Create()
-[void]$bgPs.AddScript($bgCode).AddArgument($bg).AddArgument((Join-Path $here 'Scan-Apps.ps1')).AddArgument($scanFile)
+[void]$bgPs.AddScript($bgCode).AddArgument($bg).AddArgument((Join-Path $here 'Scan-Apps.ps1')).AddArgument($scanFile).AddArgument((Join-Path $here 'Running.ps1'))
 [void]$bgPs.BeginInvoke()
 Trace 'background started'
 $win.Add_Closed({ $bg.stop = $true })
 
 $ui.RescanBtn.Content = 'Rescan'
+$ui.RunBtn.Content = 'Running / Stop'
+$ui.RunBtn.Add_Click({ Show-RunningWindow })
+$ui.UpdateBtn.Content = 'Update'
+$ui.UpdateBtn.Add_Click({ Invoke-CCUpdate })
+$script:updSeen = $false
 $ui.RescanBtn.Add_Click({ $bg.rescan = $true; $ui.RescanBtn.Content = 'Scanning...'; $ui.RescanBtn.IsEnabled = $false })
 
 # ---- live status
@@ -781,7 +869,7 @@ $ui.Search.Add_KeyDown({ param($s, $e)
 })
 
 # ---- clock / subtitle
-function Update-Clock { $ui.SubTitle.Text = (Get-Date -Format 'dddd, MMMM d  -  h:mm tt') + '   -   ' + $env:COMPUTERNAME }
+function Update-Clock { if ((Get-Date) -lt $script:noteUntil) { return }; $ui.SubTitle.Text = (Get-Date -Format 'dddd, MMMM d  -  h:mm tt') + '   -   ' + $env:COMPUTERNAME }
 Update-Clock
 
 $timer = New-Object Windows.Threading.DispatcherTimer
@@ -801,6 +889,7 @@ $timer.Add_Tick({
     } catch {}
   }
   Update-Clock; Update-Status
+  if ($bg.updatesAt -and -not $script:updSeen) { $script:updSeen = $true; $script:updList = @($bg.updates); Set-UpdateButton }
   if ($bg.appsDone) {
     $bg.appsDone = $false; $ui.RescanBtn.Content = 'Rescan'; $ui.RescanBtn.IsEnabled = $true
     if (-not $ui.Search.Text) { Merge-Scan; Build-Sections }
