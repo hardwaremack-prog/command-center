@@ -106,6 +106,7 @@ function Get-ProcRow([int]$id, $cimMap) {
 # Windows' built-in web server (http.sys) answers for some apps (Halo Lab, Hardware Monitor):
 # the port then belongs to "System", so ask Windows which program registered it.
 function Get-HttpSysOwners([int]$port) {
+  $ErrorActionPreference = 'Continue'   # netsh writing to stderr must never stop Command Center
   $ids = New-Object Collections.ArrayList
   try {
     $txt = (& "$env:SystemRoot\System32\netsh.exe" http show servicestate view=requestq 2>$null) | Out-String
@@ -130,6 +131,23 @@ function Get-PortOwners([int]$port) {
   return @($out | Sort-Object -Unique)
 }
 
+# every process started by $id (and by those, and so on) - taskkill /T tries to end them too
+function Get-Descendants([int]$id, $cimMap) {
+  $out = New-Object Collections.ArrayList
+  $queue = New-Object Collections.Queue; $queue.Enqueue($id)
+  while ($queue.Count) {
+    $n = [int]$queue.Dequeue()
+    foreach ($c in $cimMap.Values) {
+      $k = [int]$c.ProcessId
+      if ([int]$c.ParentProcessId -eq $n -and $k -ne $n -and $k -ne $id -and -not $out.Contains($k)) {
+        if ([IO.Path]::GetFileNameWithoutExtension([string]$c.Name) -match $NeverStop) { continue }   # conhost etc. close on their own
+        [void]$out.Add($k); $queue.Enqueue($k)
+      }
+    }
+  }
+  return @($out)
+}
+
 # a .bat that started only this server: stop it too, so its black window does not stay behind
 function Get-LauncherId($row, $cimMap) {
   if (-not $row -or -not $row.ppid) { return $null }
@@ -152,6 +170,7 @@ function Show-Note([string]$msg) {
 # Returns a short sentence saying what happened ('' when you said No).
 function Invoke-Stop {
   param($rows, [string]$what, [switch]$Force, [switch]$NoAsk, [switch]$WithLauncher)
+  $ErrorActionPreference = 'Continue'   # taskkill complaining (e.g. "could not be terminated") is reported, not fatal
   $rows = @($rows | Where-Object { $_ -and [int]$_.pid -gt 4 -and [int]$_.pid -ne $PID })
   if (-not $rows.Count) { return "$what is not running." }
   $bad = @($rows | Where-Object { $_.exe -match $NeverStop })
@@ -191,11 +210,25 @@ function Invoke-Stop {
   foreach ($r in $kill) {
     $id = [int]$r.pid
     if (-not (Get-Process -Id $id -ErrorAction SilentlyContinue)) { if (-not $r.helper) { [void]$stopped.Add($r) }; continue }
-    $o = (& $taskkill /PID $id /T /F 2>&1) | Out-String
+    $kids = @(Get-Descendants $id $cimMap)
+    $o = ''
+    try { $o = (@(& $taskkill /PID $id /T /F 2>&1) | ForEach-Object { [string]$_ }) -join "`n" } catch { $o = [string]$_ }
     for ($w = 0; $w -lt 8 -and (Get-Process -Id $id -ErrorAction SilentlyContinue); $w++) { Wait-UI 100 }
-    if (Get-Process -Id $id -ErrorAction SilentlyContinue) {
-      if ($o -match '(?i)denied|access|privilege') { [void]$denied.Add($r) } else { [void]$failed.Add($r) }
-    } elseif (-not $r.helper) { [void]$stopped.Add($r) }
+    # the program and every helper it started: which are still running?
+    $left = @(@($id) + $kids | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
+    if (-not $left.Count) { if (-not $r.helper) { [void]$stopped.Add($r) }; continue }
+    $isDenied = $o -match '(?i)denied|access|privilege|could not be terminated'
+    foreach ($l in $left) {
+      $row = $r
+      if ($l -ne $id) {
+        $c = $cimMap[[int]$l]
+        $ex = if ($c) { [IO.Path]::GetFileNameWithoutExtension([string]$c.Name) } else { 'helper' }
+        $nm = if ($c) { Get-NiceName $ex ([string]$c.ExecutablePath) ([string]$c.CommandLine) } else { 'helper' }
+        $row = @{ pid = [int]$l; name = ($nm + ' (part of ' + $r.name + ')'); exe = $ex; helper = $true }
+      }
+      if ($isDenied) { [void]$denied.Add($row) } else { [void]$failed.Add($row) }
+    }
+    if ($left -notcontains $id -and -not $r.helper) { [void]$stopped.Add($r) }
   }
 
   # windows that were asked to close get up to 5 seconds
@@ -221,7 +254,7 @@ function Invoke-Stop {
         Start-Process -FilePath $taskkill -ArgumentList $argList -Verb RunAs -WindowStyle Hidden -Wait
       } catch {}
       Wait-UI 300
-      foreach ($r in @($denied)) { if (-not (Get-Process -Id ([int]$r.pid) -ErrorAction SilentlyContinue)) { [void]$stopped.Add($r); $denied.Remove($r) } }
+      foreach ($r in @($denied)) { if (-not (Get-Process -Id ([int]$r.pid) -ErrorAction SilentlyContinue)) { if (-not $r.helper) { [void]$stopped.Add($r) }; $denied.Remove($r) } }
     }
   }
 
