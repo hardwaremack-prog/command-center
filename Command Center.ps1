@@ -485,6 +485,13 @@ function Start-OpenClaw([string]$cmdArgs, [switch]$Hidden, [switch]$KeepOpen, [s
 '@
 
 $win = [Windows.Markup.XamlReader]::Load((New-Object Xml.XmlNodeReader $xaml))
+# a problem inside a button is reported and Command Center keeps running (it used to close)
+$win.Dispatcher.Add_UnhandledException({ param($s, $e)
+  $e.Handled = $true
+  $ex = $e.Exception; while ($ex.InnerException -and $ex -is [Management.Automation.MethodInvocationException]) { $ex = $ex.InnerException }
+  try { Add-Content -Path $errLog -Value ((Get-Date -Format s) + '  ' + ($e.Exception | Out-String)) -Encoding UTF8 } catch {}
+  try { [void][Windows.MessageBox]::Show(("Something went wrong, but Command Center is still running.`n`n" + $ex.Message + "`n`nDetails: " + $errLog), 'Command Center') } catch {}
+})
 Trace 'window loaded'
 # size the window to the screen (this PC has a large display)
 $wa = [Windows.SystemParameters]::WorkArea
