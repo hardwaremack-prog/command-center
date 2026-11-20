@@ -253,13 +253,26 @@ function Start-App($app) {
   } catch { Show-Error ("Couldn't open " + $app.n + ".`n`n" + $_.Exception.Message) }
 }
 
-function Start-OpenClaw([string]$cmdArgs, [switch]$Hidden, [switch]$KeepOpen) {
+# -Admin: the gateway runs as a Windows Scheduled Task set up with administrator rights, so
+# checking, starting or stopping it from a normal window fails with "Task Scheduler probe failed
+# ... 0x80070005" (access denied). Those commands run as administrator (Windows asks first).
+# Returns $true when the command started, $false when it couldn't (or you said No).
+function Start-OpenClaw([string]$cmdArgs, [switch]$Hidden, [switch]$KeepOpen, [switch]$Admin, [switch]$Wait) {
   try {
     $flag = '/c'; if ($KeepOpen) { $flag = '/k' }
-    $p = @{ FilePath = "$env:SystemRoot\System32\cmd.exe"; ArgumentList = "$flag openclaw $cmdArgs"; WorkingDirectory = $U }
+    $p = @{ FilePath = "$env:SystemRoot\System32\cmd.exe"; ArgumentList = "$flag openclaw $cmdArgs"; WorkingDirectory = $U; PassThru = $true }
+    if ($Admin) { $p.Verb = 'RunAs'; $p.ArgumentList = "$flag cd /d `"$U`" && openclaw $cmdArgs" }
     if ($Hidden) { $p.WindowStyle = 'Hidden' }
-    Start-Process @p
-  } catch { Show-Error ("Couldn't run openclaw $cmdArgs.`n`n" + $_.Exception.Message) }
+    $proc = Start-Process @p
+    if ($Wait -and $proc) {
+      for ($i = 0; $i -lt 150; $i++) { $done = $true; try { $done = $proc.HasExited } catch {}; if ($done) { break }; Wait-UI 200 }
+    }
+    return $true
+  } catch {
+    if ($Admin -and $_.Exception.Message -match '(?i)cancel') { Show-Note "Didn't run openclaw $cmdArgs - Windows wasn't given permission."; return $false }
+    Show-Error ("Couldn't run openclaw $cmdArgs.`n`n" + $_.Exception.Message)
+    return $false
+  }
 }
 
 # ---------------------------------------------------------------- window
@@ -524,14 +537,15 @@ function Add-ClawButton([string]$text, [scriptblock]$action, [switch]$Main) {
   $b.Add_Click($action)
   [void]$ui.ClawButtons.Children.Add($b)
 }
-Add-ClawButton 'Open Dashboard'  { Start-OpenClaw 'dashboard --yes' -Hidden } -Main
-Add-ClawButton 'Chat in Terminal' { Start-OpenClaw 'tui' }
+Add-ClawButton 'Open Dashboard'  { [void](Start-OpenClaw 'dashboard --yes' -Hidden) } -Main
+Add-ClawButton 'Chat in Terminal' { [void](Start-OpenClaw 'tui') }
 Add-ClawButton 'Open LM Studio'  { try { Start-Process -FilePath (Join-Path $env:ProgramFiles 'AMD\AI_Bundle\LMStudio\LM Studio\LM Studio.exe') } catch { Show-Error ("Couldn't open LM Studio.`n`n" + $_.Exception.Message) } }
-Add-ClawButton 'Restart Gateway' { Start-OpenClaw 'gateway restart' -KeepOpen }
-Add-ClawButton 'Stop Gateway'    { Start-OpenClaw 'gateway stop --force' -KeepOpen }
-Add-ClawButton 'Start Gateway'   { Start-OpenClaw 'gateway start' -KeepOpen }
-Add-ClawButton 'Live Logs'       { Start-OpenClaw 'logs --follow --local-time' -KeepOpen }
-Add-ClawButton 'Status'          { Start-OpenClaw 'status' -KeepOpen }
+# gateway commands talk to the Scheduled Task, so they run as administrator (see Start-OpenClaw)
+Add-ClawButton 'Restart Gateway' { [void](Start-OpenClaw 'gateway restart' -KeepOpen -Admin) }
+Add-ClawButton 'Stop Gateway'    { [void](Start-OpenClaw 'gateway stop --force' -KeepOpen -Admin) }
+Add-ClawButton 'Start Gateway'   { [void](Start-OpenClaw 'gateway start' -KeepOpen -Admin) }
+Add-ClawButton 'Live Logs'       { [void](Start-OpenClaw 'logs --follow --local-time' -KeepOpen) }
+Add-ClawButton 'Status'          { [void](Start-OpenClaw 'gateway status --deep' -KeepOpen -Admin) }
 Add-ClawButton 'Settings Folder' { Start-Process -FilePath $OC }
 $upLog = Join-Path $OC 'upgrade-log.txt'
 if (Test-Path $upLog) { Add-ClawButton 'Upgrade Log' { Start-Process -FilePath (Join-Path $OC 'upgrade-log.txt') } }
@@ -622,9 +636,13 @@ function Build-Sections {
 $haloPort = 11500; $haloLan = $false
 try { $hc = Get-Content (Join-Path $env:LOCALAPPDATA 'HaloLab\config.json') -Raw | ConvertFrom-Json; if ([int]$hc.port -ge 1024) { $haloPort = [int]$hc.port }; $haloLan = [bool]$hc.lan } catch {}
 $knownServers = @(
-  @{ n = 'OpenClaw gateway'; port = 18789; always = $true; note = 'Your AI agent. Click opens its dashboard.'; open = { Start-OpenClaw 'dashboard --yes' -Hidden }
-     stop = { Start-OpenClaw 'gateway stop --force' -Hidden; 'Asked OpenClaw to stop its gateway - the light turns red in a few seconds.' }
-     restart = { Start-OpenClaw 'gateway restart' -Hidden; 'Restarting the OpenClaw gateway...' } }
+  @{ n = 'OpenClaw gateway'; port = 18789; always = $true; note = 'Your AI agent. Click opens its dashboard.'; open = { [void](Start-OpenClaw 'dashboard --yes' -Hidden) }
+     stop = {
+       if (-not (Start-OpenClaw 'gateway stop --force' -Hidden -Admin -Wait)) { return 'Left the OpenClaw gateway running.' }
+       for ($i = 0; $i -lt 15 -and (Test-PortNow 18789); $i++) { Wait-UI 300 }
+       if (Test-PortNow 18789) { return $null }   # still answering: stop the program itself instead (asks first)
+       'Stopped the OpenClaw gateway.' }
+     restart = { if (Start-OpenClaw 'gateway restart' -Hidden -Admin) { 'Restarting the OpenClaw gateway...' } } }
   @{ n = 'LM Studio';        port = 1234;  always = $true; note = 'Model server OpenClaw uses (OpenAI-style API at /v1).'; api = $true
      stop = { $lms = Join-Path $U '.lmstudio\bin\lms.exe'; if (Test-Path -LiteralPath $lms) { Start-Process -FilePath $lms -ArgumentList 'server stop' -WindowStyle Hidden; 'Asked LM Studio to stop serving (the LM Studio app stays open).' } }
      restart = { $lms = Join-Path $U '.lmstudio\bin\lms.exe'; if (Test-Path -LiteralPath $lms) { Start-Process -FilePath $lms -ArgumentList 'server start' -WindowStyle Hidden; 'Asked LM Studio to start serving.' } } }
